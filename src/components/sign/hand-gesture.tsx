@@ -32,6 +32,12 @@ export const HandGestureRecognizer = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastTsRef = useRef<number>(0);
   const stableRef = useRef<{ name: string; frames: number }>({ name: "", frames: 0 });
+  // Throttle and one-shot speak helpers
+  const lastInferAtRef = useRef<number>(0);
+  const lastSpokenAtRef = useRef<number>(0);
+  const lastCommittedRef = useRef<string | null>(null);
+  const INFER_INTERVAL_MS = 100; // ~10 FPS
+  const SPEAK_COOLDOWN_MS = 1500; // avoid repeated speech
 
   const ensureVideo = async (): Promise<HTMLVideoElement> => {
     // Try to reuse the existing local preview video from Interview page
@@ -105,6 +111,13 @@ export const HandGestureRecognizer = () => {
     if (!r || !video) return;
 
     const now = performance.now();
+    // Throttle inference to ~10fps
+    if (now - lastInferAtRef.current < INFER_INTERVAL_MS) {
+      rafRef.current = requestAnimationFrame(loop);
+      return;
+    }
+    lastInferAtRef.current = now;
+
     const res: GestureRecognizerResult | undefined = r.recognizeForVideo(video, now);
 
     if (res && res.gestures && res.gestures[0] && res.gestures[0][0]) {
@@ -119,20 +132,26 @@ export const HandGestureRecognizer = () => {
       if (stable.name === name) stable.frames += 1;
       else stableRef.current = { name, frames: 1 };
 
-      if (stableRef.current.frames >= 8 && score >= 0.7) {
-        const gloss = GLOSS_MAP[name] || name.toUpperCase();
-        // Append if changed recently
-        const words = phrase.trim().split(/\s+/).filter(Boolean);
-        if (words[words.length - 1] !== gloss) {
-          setPhrase((p) => (p ? p + " " : "") + gloss);
+      const gloss = GLOSS_MAP[name]; // only mapped gestures are spoken
+      if (stableRef.current.frames >= 8 && score >= 0.7 && gloss) {
+        // Commit once per gesture change, then cooldown before next speech
+        if (lastCommittedRef.current !== name) {
+          lastCommittedRef.current = name;
+          // Replace phrase with a single word (no accumulation)
+          setPhrase(gloss);
+          if (now - lastSpokenAtRef.current > SPEAK_COOLDOWN_MS) {
+            const u = new SpeechSynthesisUtterance(gloss);
+            window.speechSynthesis.speak(u);
+            lastSpokenAtRef.current = now;
+          }
         }
-        stableRef.current.frames = 0; // reset to avoid spamming
+        stableRef.current.frames = 0; // reset stabilization counter
       }
     }
 
     lastTsRef.current = now;
     rafRef.current = requestAnimationFrame(loop);
-  }, [phrase]);
+  }, []);
 
   const start = async () => {
     if (!isReady || running) return;
@@ -146,6 +165,9 @@ export const HandGestureRecognizer = () => {
     setRunning(false);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
+    // reset one-shot state so next run can speak again
+    lastCommittedRef.current = null;
+    stableRef.current = { name: "", frames: 0 };
   };
 
   const speak = (text: string) => {
