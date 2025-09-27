@@ -4,14 +4,59 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Mic, MicOff, Video, VideoOff, PhoneOff, RefreshCcw, Download, Activity, Play, StopCircle, Volume2 } from "lucide-react";
+import { Mic, MicOff, Video, VideoOff, PhoneOff, RefreshCcw, Download, Activity, Play, StopCircle, Volume2, Settings } from "lucide-react";
 import HandGestureRecognizer from "@/components/sign/hand-gesture";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useRouter } from "next/navigation";
+import { useSession } from "@/lib/auth-client";
 
 export default function InterviewRoom() {
+  // Auth protection
+  const { data: session, isPending } = useSession();
+  const router = useRouter();
+  useEffect(() => {
+    if (!isPending && !session?.user) {
+      router.push(`/login?redirect=${encodeURIComponent("/interview")}`);
+    }
+  }, [isPending, session, router]);
+
+  // Attach bearer token to room API requests
+  const authHeaders = () => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("bearer_token") : null;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  // Redirect helper on 401
+  const ensureAuthedOrRedirect = (res: Response) => {
+    if (res.status === 401) {
+      router.push(`/login?redirect=${encodeURIComponent("/interview")}`);
+      return false;
+    }
+    return true;
+  };
+
+  // Quick Tour (one-time)
+  const [showTour, setShowTour] = useState(false);
+  useEffect(() => {
+    try {
+      const seen = typeof window !== "undefined" ? localStorage.getItem("aurasign_tour_seen_v1") : "1";
+      if (!seen) setShowTour(true);
+    } catch {}
+  }, []);
+  const dismissTour = () => {
+    try {
+      localStorage.setItem("aurasign_tour_seen_v1", "1");
+    } catch {}
+    setShowTour(false);
+  };
+
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const pc1Ref = useRef<RTCPeerConnection | null>(null);
   const pc2Ref = useRef<RTCPeerConnection | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
@@ -41,6 +86,17 @@ export default function InterviewRoom() {
   const [recognizing, setRecognizing] = useState(false);
   const [transcript, setTranscript] = useState("");
   const recognitionRef = useRef<any>(null);
+  const [interim, setInterim] = useState("");
+  const shouldRestartRef = useRef(false);
+  const finalCountRef = useRef(0);
+
+  // Detect Speech API support early (pre-initialization)
+  useEffect(() => {
+    const SR = (typeof window !== "undefined" && ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)) as
+      | (new () => SpeechRecognition)
+      | undefined;
+    setSpeechSupported(!!SR);
+  }, []);
 
   // Mic activity meter
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -50,9 +106,46 @@ export default function InterviewRoom() {
   const levelTimerRef = useRef<number | null>(null);
 
   // Meet-style UI state
-  const [role, setRole] = useState<"interviewer" | "candidate">("candidate");
-  const [enableSpeechToSign, setEnableSpeechToSign] = useState(true);
-  const [enableSignToSpeech, setEnableSignToSpeech] = useState(true);
+  // ... keep role and feature toggles if needed in future
+  // const [role, setRole] = useState<"interviewer" | "candidate">("candidate");
+  // const [enableSpeechToSign, setEnableSpeechToSign] = useState(true);
+  // const [enableSignToSpeech, setEnableSignToSpeech] = useState(true);
+
+  // Sidebar translation preferences (per-user)
+  const [receiveAs, setReceiveAs] = useState<"avatar" | "transcript" | "audio">("transcript");
+  const [showAvatar, setShowAvatar] = useState(true);
+  const [showTranscript, setShowTranscript] = useState(true);
+  const [sendSignAsSpeech, setSendSignAsSpeech] = useState(true);
+
+  // Draggable PiP state
+  const pipRef = useRef<HTMLDivElement | null>(null);
+  const [pipPos, setPipPos] = useState<{ x: number; y: number }>({ x: 24, y: 24 });
+  const draggingRef = useRef<{ active: boolean; startX: number; startY: number; origX: number; origY: number }>({ active: false, startX: 0, startY: 0, origX: 0, origY: 0 });
+
+  function onPipPointerDown(e: React.MouseEvent | React.TouchEvent) {
+    e.preventDefault();
+    const pt = "touches" in e ? e.touches[0] : (e as React.MouseEvent);
+    draggingRef.current = { active: true, startX: pt.clientX, startY: pt.clientY, origX: pipPos.x, origY: pipPos.y };
+    window.addEventListener("pointermove", onPipPointerMove as any);
+    window.addEventListener("pointerup", onPipPointerUp as any);
+    window.addEventListener("touchmove", onPipPointerMove as any, { passive: false });
+    window.addEventListener("touchend", onPipPointerUp as any);
+  }
+  function onPipPointerMove(e: PointerEvent | TouchEvent) {
+    e.preventDefault();
+    const pt = (e as TouchEvent).touches ? (e as TouchEvent).touches[0] : (e as PointerEvent);
+    const dx = pt.clientX - draggingRef.current.startX;
+    const dy = pt.clientY - draggingRef.current.startY;
+    const next = { x: draggingRef.current.origX + dx, y: draggingRef.current.origY + dy };
+    setPipPos(next);
+  }
+  function onPipPointerUp() {
+    draggingRef.current.active = false;
+    window.removeEventListener("pointermove", onPipPointerMove as any);
+    window.removeEventListener("pointerup", onPipPointerUp as any);
+    window.removeEventListener("touchmove", onPipPointerMove as any);
+    window.removeEventListener("touchend", onPipPointerUp as any);
+  }
 
   async function ensureLocalMedia() {
     if (streamRef.current) return streamRef.current;
@@ -90,11 +183,14 @@ export default function InterviewRoom() {
   function createPeer() {
     if (pc1Ref.current) return pc1Ref.current;
     const pc = new RTCPeerConnection();
+    pc.ondatachannel = (e) => {
+      setupDataChannel(e.channel);
+    };
     pc.onicecandidate = async (e) => {
       if (e.candidate && otherPeerIdRef.current) {
         await fetch("/api/rooms/send", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({
             name: roomName,
             to: otherPeerIdRef.current,
@@ -106,8 +202,43 @@ export default function InterviewRoom() {
     pc.ontrack = (e) => {
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
     };
+    // If we're the host, proactively create a data channel
+    if (isHostRef.current) {
+      const dc = pc.createDataChannel("aurasign");
+      setupDataChannel(dc);
+    }
     pc1Ref.current = pc;
     return pc;
+  }
+
+  function setupDataChannel(dc: RTCDataChannel) {
+    dataChannelRef.current = dc;
+    dc.onopen = () => {
+      // Channel ready
+    };
+    dc.onclose = () => {
+      if (dataChannelRef.current === dc) dataChannelRef.current = null;
+    };
+    dc.onerror = () => {};
+    dc.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg?.type === "tts" && typeof msg.text === "string" && msg.text) {
+          const u = new SpeechSynthesisUtterance(msg.text);
+          window.speechSynthesis.speak(u);
+        }
+      } catch {
+        // ignore non-JSON
+      }
+    };
+  }
+
+  function sendRemoteTTS(text: string) {
+    const dc = dataChannelRef.current;
+    if (!text || !dc || dc.readyState !== "open") return;
+    try {
+      dc.send(JSON.stringify({ type: "tts", text }));
+    } catch {}
   }
 
   async function makeOffer() {
@@ -120,7 +251,7 @@ export default function InterviewRoom() {
       if (otherPeerIdRef.current) {
         await fetch("/api/rooms/send", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({
             name: roomName,
             to: otherPeerIdRef.current,
@@ -144,7 +275,7 @@ export default function InterviewRoom() {
       await pc.setLocalDescription(answer);
       await fetch("/api/rooms/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           name: roomName,
           to: from,
@@ -182,9 +313,12 @@ export default function InterviewRoom() {
       try {
         const res = await fetch("/api/rooms/poll", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ name: roomName, peerId: peerIdRef.current }),
         });
+        if (!ensureAuthedOrRedirect(res)) {
+          return;
+        }
         const data = await res.json();
         if (data?.ok && Array.isArray(data.messages)) {
           for (const m of data.messages as any[]) {
@@ -219,6 +353,13 @@ export default function InterviewRoom() {
   async function secureEnterRoom() {
     setError(null);
     try {
+      // Block if not logged in / missing bearer token
+      const token = typeof window !== "undefined" ? localStorage.getItem("bearer_token") : null;
+      if (!token) {
+        router.push(`/login?redirect=${encodeURIComponent("/interview")}`);
+        return;
+      }
+
       const pid = (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
       peerIdRef.current = pid;
 
@@ -226,9 +367,10 @@ export default function InterviewRoom() {
         isHostRef.current = true;
         const createRes = await fetch("/api/rooms/create", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ name: roomName, password: roomPassword }),
         });
+        if (!ensureAuthedOrRedirect(createRes)) return;
         const createData = await createRes.json();
         if (!createData?.ok && createData?.error !== "ROOM_ALREADY_EXISTS") {
           setError(createData?.error || "Failed to create room");
@@ -240,9 +382,10 @@ export default function InterviewRoom() {
 
       const joinRes = await fetch("/api/rooms/join", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ name: roomName, password: roomPassword, peerId: peerIdRef.current }),
       });
+      if (!ensureAuthedOrRedirect(joinRes)) return;
       const joinData = await joinRes.json();
       if (!joinData?.ok) {
         setError(joinData?.error || "Failed to join room");
@@ -367,17 +510,85 @@ export default function InterviewRoom() {
     }
     setSpeechSupported(true);
     const rec = new SR();
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (/(Mac).*CPU.*OS\sX/.test(ua) && "ontouchend" in window);
     rec.lang = "en-US";
-    rec.continuous = true;
+    rec.continuous = !isIOS; // iOS Safari is more stable with non-continuous
     rec.interimResults = true;
-    rec.onresult = (event: any) => {
-      let txt = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        txt += event.results[i][0].transcript + " ";
-      }
-      setTranscript((prev) => (prev ? prev + " " : "") + txt.trim());
+    rec.maxAlternatives = 1;
+    rec.onstart = () => {
+      setRecognizing(true);
     };
-    rec.onend = () => setRecognizing(false);
+    rec.onresult = (event: any) => {
+      // Build list of all final segments in this session and append only the new ones
+      let finals: string[] = [];
+      let interimText = "";
+      for (let i = 0; i < event.results.length; i++) {
+        const res = event.results[i];
+        const text = (res[0]?.transcript || "").trim();
+        if (!text) continue;
+        if (res.isFinal) finals.push(text);
+      }
+      const currentFinalsCount = finals.length;
+      if (currentFinalsCount > finalCountRef.current) {
+        const newChunks = finals.slice(finalCountRef.current);
+        if (newChunks.length) {
+          setTranscript((prev) => (prev ? prev + " " : "") + newChunks.join(" "));
+        }
+        finalCountRef.current = currentFinalsCount;
+      }
+      // Interim is the last non-final hypothesis, if any
+      const lastIdx = event.results.length - 1;
+      if (lastIdx >= 0 && !event.results[lastIdx].isFinal) {
+        interimText = (event.results[lastIdx][0]?.transcript || "").trim();
+      }
+      setInterim(interimText);
+    };
+    rec.onerror = (e: any) => {
+      const code = e?.error;
+      if (code === "not-allowed" || code === "service-not-allowed" || code === "audio-capture") {
+        setError(
+          code === "audio-capture"
+            ? "No microphone detected. Please connect or enable a mic."
+            : "Microphone access blocked. Please allow mic permissions."
+        );
+        shouldRestartRef.current = false;
+        try {
+          rec.stop();
+        } catch {}
+        setRecognizing(false);
+        return;
+      }
+      // Auto-recover from transient errors
+      if (code === "no-speech" || code === "network" || code === "aborted") {
+        try {
+          rec.stop();
+        } catch {}
+      }
+    };
+    rec.onend = () => {
+      if (shouldRestartRef.current) {
+        // Reset per-session counters
+        finalCountRef.current = 0;
+        // iOS needs a tiny delay before restart
+        const restart = () => {
+          try {
+            rec.start();
+            setRecognizing(true);
+          } catch {
+            // swallow
+          }
+        };
+        if (isIOS) {
+          setTimeout(restart, 150);
+        } else {
+          restart();
+        }
+      } else {
+        setRecognizing(false);
+        setInterim("");
+      }
+    };
     recognitionRef.current = rec;
   }
 
@@ -388,14 +599,23 @@ export default function InterviewRoom() {
     if (!recognizing) {
       try {
         setTranscript("");
+        setInterim("");
+        finalCountRef.current = 0;
+        shouldRestartRef.current = true;
         rec.start();
         setRecognizing(true);
       } catch {
         // ignored
       }
     } else {
-      rec.stop();
-      setRecognizing(false);
+      shouldRestartRef.current = false;
+      try {
+        if (typeof rec.abort === "function") rec.abort();
+        else rec.stop();
+      } finally {
+        setRecognizing(false);
+        setInterim("");
+      }
     }
   }
 
@@ -412,7 +632,7 @@ export default function InterviewRoom() {
       if (peerIdRef.current && roomName) {
         fetch("/api/rooms/leave", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ name: roomName, peerId: peerIdRef.current }),
         }).catch(() => {});
       }
@@ -424,10 +644,42 @@ export default function InterviewRoom() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // While checking auth, avoid rendering the lobby/UI to prevent flicker
+  if (isPending) {
+    return (
+      <div className="grid min-h-[60vh] place-items-center p-6 text-sm text-muted-foreground">
+        Checking authentication...
+      </div>
+    );
+  }
+
   // Lobby UI before entering the room
   if (!hasJoined) {
     return (
       <div className="mx-auto max-w-xl p-4 sm:p-6">
+        {/* Quick Tour overlay */}
+        {showTour && (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg">
+              <div className="border-b p-4">
+                <h2 className="text-base font-semibold">Quick tour</h2>
+              </div>
+              <div className="space-y-3 p-4 text-sm text-muted-foreground">
+                <p>Welcome to the interview room. Here's how to get started:</p>
+                <ol className="list-decimal pl-5 space-y-1">
+                  <li>Choose Create Room or Join Room.</li>
+                  <li>Enter a room name and password.</li>
+                  <li>After joining, press Start to begin the call.</li>
+                </ol>
+                <p className="text-xs">Note: You must be logged in to attend or create a room.</p>
+              </div>
+              <div className="flex items-center justify-end gap-2 border-t p-3">
+                <Button variant="outline" onClick={dismissTour}>Got it</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Join an Interview</CardTitle>
@@ -498,108 +750,134 @@ export default function InterviewRoom() {
   }
 
   return (
-    <div className="p-0">
-      <div className="relative h-[calc(100vh-1rem)] w-full overflow-hidden rounded-lg bg-black">
-        {/* Remote fills screen */}
-        <video ref={remoteVideoRef} autoPlay playsInline className="absolute inset-0 h-full w-full object-cover" />
-        {!connected && (
-          <div className="absolute inset-0 grid place-items-center text-sm text-white/70">Remote participant</div>
-        )}
+    <div className="h-[100svh] w-full overflow-hidden bg-black">
+      {/* 75/25 split layout */}
+      <div className="grid h-full w-full grid-cols-[3fr_1fr]">
+        {/* Main Video Area (75%) */}
+        <div className="relative overflow-hidden">
+          {/* Remote fills */}
+          <video ref={remoteVideoRef} autoPlay playsInline className="absolute inset-0 h-full w-full object-cover" />
+          {!connected && (
+            <div className="absolute inset-0 grid place-items-center text-sm text-white/70">Remote participant</div>
+          )}
 
-        {/* Local PiP */}
-        <div className="pointer-events-auto absolute bottom-4 right-4 w-40 sm:w-56">
-          <div className="relative aspect-video overflow-hidden rounded-md border bg-black/70 shadow-lg">
-            <video ref={localVideoRef} id="localVideoEl" autoPlay muted playsInline className="h-full w-full object-cover" />
-            {!connected && (
-              <div className="absolute inset-0 grid place-items-center text-[10px] text-white/70">Local preview</div>
-            )}
+          {/* Draggable Local PiP */}
+          <div
+            ref={pipRef}
+            onMouseDown={onPipPointerDown as any}
+            onTouchStart={onPipPointerDown as any}
+            className="pointer-events-auto absolute z-20"
+            style={{ right: pipPos.x, bottom: pipPos.y }}
+          >
+            <div className="relative w-44 sm:w-56">
+              <div className="aspect-video overflow-hidden rounded-md border border-white/20 bg-black/70 shadow-lg">
+                <video ref={localVideoRef} id="localVideoEl" autoPlay muted playsInline className="h-full w-full object-cover" />
+                {!connected && (
+                  <div className="absolute inset-0 grid place-items-center text-[10px] text-white/70">Local preview</div>
+                )}
+              </div>
+            </div>
           </div>
-        </div>
 
-        {/* Bottom center call controls */}
-        <div className="pointer-events-auto absolute inset-x-0 bottom-4 flex items-center justify-center gap-2 px-4">
-          {!connected ? (
-            <Button onClick={startCall} aria-label="Start call" className="bg-white/10 text-white hover:bg-white/20">
-              <RefreshCcw className="mr-2 h-4 w-4" /> Start
-            </Button>
-          ) : (
-            <Button variant="destructive" onClick={hangUp} aria-label="End call">
-              <PhoneOff className="mr-2 h-4 w-4" /> End
-            </Button>
-          )}
-          <Button variant={muted ? "secondary" : "default"} onClick={toggleMute} aria-pressed={muted} aria-label={muted ? "Unmute" : "Mute"} className="bg-white/10 text-white hover:bg-white/20">
-            {muted ? <MicOff className="mr-2 h-4 w-4" /> : <Mic className="mr-2 h-4 w-4" />} {muted ? "Unmute" : "Mute"}
-          </Button>
-          <Button variant={cameraOff ? "secondary" : "default"} onClick={toggleCamera} aria-pressed={cameraOff} aria-label={cameraOff ? "Turn camera on" : "Turn camera off"} className="bg-white/10 text-white hover:bg-white/20">
-            {cameraOff ? <VideoOff className="mr-2 h-4 w-4" /> : <Video className="mr-2 h-4 w-4" />} {cameraOff ? "Cam On" : "Cam Off"}
-          </Button>
-          {!isRecording ? (
-            <Button variant="outline" onClick={startRecording} aria-label="Start recording" className="bg-white/10 text-white hover:bg-white/20">
-              <Play className="mr-2 h-4 w-4" /> Record
-            </Button>
-          ) : (
-            <Button variant="outline" onClick={() => stopRecording()} aria-label="Stop recording" className="bg-white/10 text-white hover:bg-white/20">
-              <StopCircle className="mr-2 h-4 w-4" /> Stop
-            </Button>
-          )}
-          {downloadUrl && (
-            <a href={downloadUrl} download={`aurasign-${roomName}.webm`} className="inline-flex items-center rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20">
-              <Download className="mr-2 h-4 w-4" /> Download
-            </a>
-          )}
-          <div className="ml-2 hidden items-center gap-2 text-xs text-white/80 sm:flex">
-            <Activity className={`h-4 w-4 ${micActive ? "text-green-400" : "text-white/60"}`} />
-            Mic {micActive ? "active" : "idle"}
-          </div>
-        </div>
-
-        {/* Floating role selector (top-left) */}
-        <div className="pointer-events-auto absolute left-4 top-4 flex items-center gap-2 rounded-full border border-white/20 bg-black/40 p-1 backdrop-blur">
-          <Button size="sm" variant={role === "interviewer" ? "default" : "outline"} onClick={() => setRole("interviewer")} className={`${role === "interviewer" ? "bg-white text-black hover:bg-white/90" : "bg-transparent text-white hover:bg-white/10"}`}>
-            Interviewer
-          </Button>
-          <Button size="sm" variant={role === "candidate" ? "default" : "outline"} onClick={() => setRole("candidate")} className={`${role === "candidate" ? "bg-white text-black hover:bg-white/90" : "bg-transparent text-white hover:bg-white/10"}`}>
-            Candidate
-          </Button>
-        </div>
-
-        {/* Floating feature toggles (right-center) */}
-        <div className="pointer-events-auto absolute right-4 top-1/2 -translate-y-1/2 space-y-2">
-          <Button size="sm" onClick={() => setEnableSpeechToSign((v) => !v)} className={`${enableSpeechToSign ? "bg-white text-black" : "bg-white/10 text-white"} hover:bg-white/20`}>
-            Speech → Sign
-          </Button>
-          <Button size="sm" onClick={() => setEnableSignToSpeech((v) => !v)} className={`${enableSignToSpeech ? "bg-white text-black" : "bg-white/10 text-white"} hover:bg-white/20`}>
-            Sign → Speech
-          </Button>
-        </div>
-
-        {/* Captions panel (bottom-left) */}
-        {enableSpeechToSign && (
-          <div className="pointer-events-auto absolute bottom-4 left-4 w-[min(480px,calc(100vw-5rem))] rounded-md border border-white/20 bg-black/50 p-3 text-sm text-white backdrop-blur">
-            <div className="mb-2 flex items-center gap-2">
-              <Button size="sm" variant="outline" onClick={toggleSpeechRecognition} disabled={!speechSupported} className="border-white/30 bg-white/10 text-white hover:bg-white/20">
-                {recognizing ? <StopCircle className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
-                {recognizing ? "Stop" : "Start captions"}
+          {/* Bottom Control Bar (overlaid, non-obstructive) */}
+          <div className="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-center gap-2 border-t border-white/10 bg-black/40 px-4 py-3 backdrop-blur">
+            {!connected ? (
+              <Button onClick={startCall} aria-label="Start call" className="bg-white/10 text-white hover:bg-white/20">
+                <RefreshCcw className="mr-2 h-4 w-4" /> Start
               </Button>
-              {!speechSupported && <span className="text-xs text-white/70">Speech recognition not supported</span>}
+            ) : (
+              <Button variant="destructive" onClick={hangUp} aria-label="End call">
+                <PhoneOff className="mr-2 h-4 w-4" /> End
+              </Button>
+            )}
+            <Button variant={muted ? "secondary" : "default"} onClick={toggleMute} aria-pressed={muted} aria-label={muted ? "Unmute" : "Mute"} className="bg-white/10 text-white hover:bg-white/20">
+              {muted ? <MicOff className="mr-2 h-4 w-4" /> : <Mic className="mr-2 h-4 w-4" />} {muted ? "Unmute" : "Mute"}
+            </Button>
+            <Button variant={cameraOff ? "secondary" : "default"} onClick={toggleCamera} aria-pressed={cameraOff} aria-label={cameraOff ? "Turn camera on" : "Turn camera off"} className="bg-white/10 text-white hover:bg-white/20">
+              {cameraOff ? <VideoOff className="mr-2 h-4 w-4" /> : <Video className="mr-2 h-4 w-4" />} {cameraOff ? "Cam On" : "Cam Off"}
+            </Button>
+            {!isRecording ? (
+              <Button variant="outline" onClick={startRecording} aria-label="Start recording" className="bg-white/10 text-white hover:bg-white/20">
+                <Play className="mr-2 h-4 w-4" /> Record
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => stopRecording()} aria-label="Stop recording" className="bg-white/10 text-white hover:bg-white/20">
+                <StopCircle className="mr-2 h-4 w-4" /> Stop
+              </Button>
+            )}
+            {downloadUrl && (
+              <a href={downloadUrl} download={`aurasign-${roomName}.webm`} className="inline-flex items-center rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20">
+                <Download className="mr-2 h-4 w-4" /> Download
+              </a>
+            )}
+            <div className="ml-2 hidden items-center gap-2 text-xs text-white/80 sm:flex">
+              <Activity className={`h-4 w-4 ${micActive ? "text-green-400" : "text-white/60"}`} />
+              Mic {micActive ? "active" : "idle"}
             </div>
-            <div className="max-h-40 overflow-auto whitespace-pre-wrap text-white/90">
-              {transcript || "Your live transcript will appear here..."}
+            <div className="ml-auto hidden items-center gap-2 pr-2 text-white/80 sm:flex">
+              <Settings className="h-4 w-4" />
+              <span className="text-xs">Devices</span>
             </div>
           </div>
-        )}
+        </div>
 
-        {/* Hand Gesture Recognizer panel (top-left) */}
-        {enableSignToSpeech && (
-          <div className="pointer-events-auto absolute left-4 top-24 max-w-[520px]">
-            <HandGestureRecognizer />
+        {/* Tools & Translation Sidebar (25%) */}
+        <aside className="flex h-full min-w-0 flex-col border-l border-white/10 bg-background/95 text-foreground">
+          {/* Controls header (simplified) */}
+          <div className="border-b p-4" />
+
+          {/* Only two features */}
+          <div className="flex-1 overflow-hidden p-4">
+            {/* Handsign → Speech */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="toggle-send-remote" className="text-sm">Handsign → Speech</Label>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground">Send to opponent</span>
+                  <Switch id="toggle-send-remote" checked={sendSignAsSpeech} onCheckedChange={setSendSignAsSpeech} />
+                </div>
+              </div>
+              <HandGestureRecognizer
+                onPhrase={(text) => {
+                  if (sendSignAsSpeech) {
+                    sendRemoteTTS(text);
+                  }
+                }}
+              />
+            </div>
+
+            {/* Divider */}
+            <div className="my-4 h-px w-full bg-border" />
+
+            {/* Speech → Text */}
+            <div className="flex h-[45%] min-h-40 flex-col">
+              <div className="mb-3 flex items-center justify-between">
+                <Label className="text-sm">Speech → Text</Label>
+                <Button size="sm" variant="outline" onClick={toggleSpeechRecognition} disabled={!speechSupported}>
+                  {recognizing ? <StopCircle className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
+                  {recognizing ? "Stop" : "Start"}
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto rounded-md border p-3 text-sm">
+                {speechSupported ? (
+                  <>
+                    <span className="whitespace-pre-wrap">{transcript}</span>
+                    {interim && (
+                      <span className="opacity-60 whitespace-pre-wrap"> {interim}</span>
+                    )}
+                  </>
+                ) : (
+                  "Speech recognition not supported"
+                )}
+              </div>
+            </div>
           </div>
-        )}
+        </aside>
       </div>
 
-      {/* Error notice outside the video canvas */}
+      {/* Error notice */}
       {error && (
-        <div role="alert" className="mx-4 mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
+        <div role="alert" className="absolute left-4 top-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive-foreground">
           {error}
         </div>
       )}
