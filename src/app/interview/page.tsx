@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Mic, MicOff, Video, VideoOff, PhoneOff, RefreshCcw } from "lucide-react";
+import { Mic, MicOff, Video, VideoOff, PhoneOff, RefreshCcw, Download, Activity, Play, StopCircle, Volume2 } from "lucide-react";
 
 export default function InterviewRoom() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -29,11 +29,55 @@ export default function InterviewRoom() {
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isHostRef = useRef<boolean>(false);
 
+  // Recording state
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+
+  // Audio recognition state
+  const [speechSupported, setSpeechSupported] = useState(false);
+  const [recognizing, setRecognizing] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const recognitionRef = useRef<any>(null);
+
+  // Mic activity meter
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const micLevelRef = useRef<number>(0);
+  const [micActive, setMicActive] = useState(false);
+  const levelTimerRef = useRef<number | null>(null);
+
   async function ensureLocalMedia() {
     if (streamRef.current) return streamRef.current;
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     streamRef.current = stream;
     if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    // setup mic level analyser
+    try {
+      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source = audioCtxRef.current.createMediaStreamSource(stream);
+      analyserRef.current = audioCtxRef.current.createAnalyser();
+      analyserRef.current.fftSize = 512;
+      source.connect(analyserRef.current);
+      const data = new Uint8Array(analyserRef.current.frequencyBinCount);
+      const loop = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteTimeDomainData(data);
+        // Compute RMS
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sum += v * v;
+        }
+        micLevelRef.current = Math.sqrt(sum / data.length);
+        setMicActive(micLevelRef.current > 0.02); // simple threshold
+        levelTimerRef.current = requestAnimationFrame(loop);
+      };
+      levelTimerRef.current = requestAnimationFrame(loop);
+    } catch {
+      // ignore analyser errors
+    }
     return stream;
   }
 
@@ -140,7 +184,6 @@ export default function InterviewRoom() {
           for (const m of data.messages as any[]) {
             if (!m || m.from === peerIdRef.current) continue;
             if (m.type === "join") {
-              // If I'm host and someone else joined, call them
               if (isHostRef.current && !otherPeerIdRef.current) {
                 otherPeerIdRef.current = m.from;
                 await makeOffer();
@@ -170,13 +213,11 @@ export default function InterviewRoom() {
   async function secureEnterRoom() {
     setError(null);
     try {
-      // Peer identity
       const pid = (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
       peerIdRef.current = pid;
 
       if (mode === "create") {
         isHostRef.current = true;
-        // Create then join
         const createRes = await fetch("/api/rooms/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -205,10 +246,9 @@ export default function InterviewRoom() {
       setHasJoined(true);
       const qp = new URLSearchParams({ room: roomName });
       history.replaceState(null, "", `?${qp.toString()}`);
-      // start polling for signaling
       startPolling();
-      // prepare local media early
       await ensureLocalMedia();
+      initSpeechRecognition();
     } catch (e: any) {
       setError(e?.message ?? "Unable to enter room");
     }
@@ -217,7 +257,6 @@ export default function InterviewRoom() {
   async function startCall() {
     setError(null);
     try {
-      // For manual start in case both peers are ready
       if (isHostRef.current && otherPeerIdRef.current) {
         await makeOffer();
       }
@@ -239,6 +278,7 @@ export default function InterviewRoom() {
     setConnected(false);
     setMuted(false);
     setCameraOff(false);
+    stopRecording(true);
   }
 
   function toggleMute() {
@@ -255,9 +295,114 @@ export default function InterviewRoom() {
     setCameraOff((c) => !c);
   }
 
+  // Recording helpers (MVP: merge available tracks and record)
+  function buildRecordStream(): MediaStream | null {
+    const mixed = new MediaStream();
+    const local = streamRef.current;
+    const remote = (remoteVideoRef.current?.srcObject as MediaStream) || null;
+    // Prefer remote video if present, else local video
+    const remoteVideo = remote?.getVideoTracks?.()[0];
+    const localVideo = local?.getVideoTracks?.()[0];
+    const videoTrack = remoteVideo || localVideo;
+    if (videoTrack) mixed.addTrack(videoTrack);
+    // Add both audio tracks if available
+    const localAudio = local?.getAudioTracks?.()[0];
+    const remoteAudio = remote?.getAudioTracks?.()[0];
+    if (localAudio) mixed.addTrack(localAudio);
+    if (remoteAudio) mixed.addTrack(remoteAudio);
+    if (mixed.getTracks().length === 0) return null;
+    return mixed;
+  }
+
+  function startRecording() {
+    try {
+      const recStream = buildRecordStream();
+      if (!recStream) {
+        setError("No media tracks available to record yet.");
+        return;
+      }
+      recordedChunksRef.current = [];
+      const mr = new MediaRecorder(recStream, { mimeType: "video/webm;codecs=vp9,opus" });
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      mr.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+        if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+        const url = URL.createObjectURL(blob);
+        setDownloadUrl(url);
+      };
+      mr.start();
+      recorderRef.current = mr;
+      setIsRecording(true);
+    } catch (e: any) {
+      setError(e?.message || "Failed to start recording");
+    }
+  }
+
+  function stopRecording(silent?: boolean) {
+    try {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+    } finally {
+      recorderRef.current = null;
+      if (!silent) setIsRecording(false);
+      else setIsRecording(false);
+    }
+  }
+
+  // Speech recognition (Web Speech API)
+  function initSpeechRecognition() {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
+      setSpeechSupported(false);
+      return;
+    }
+    setSpeechSupported(true);
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (event: any) => {
+      let txt = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        txt += event.results[i][0].transcript + " ";
+      }
+      setTranscript((prev) => (prev ? prev + " " : "") + txt.trim());
+    };
+    rec.onend = () => setRecognizing(false);
+    recognitionRef.current = rec;
+  }
+
+  function toggleSpeechRecognition() {
+    if (!speechSupported) return;
+    if (!recognitionRef.current) initSpeechRecognition();
+    const rec = recognitionRef.current;
+    if (!recognizing) {
+      try {
+        setTranscript("");
+        rec.start();
+        setRecognizing(true);
+      } catch {
+        // ignored
+      }
+    } else {
+      rec.stop();
+      setRecognizing(false);
+    }
+  }
+
+  // Speech synthesis for Sign -> Speech demo
+  function speak(text: string) {
+    if (!text) return;
+    const u = new SpeechSynthesisUtterance(text);
+    window.speechSynthesis.speak(u);
+  }
+
   useEffect(() => {
     return () => {
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current as any);
       if (peerIdRef.current && roomName) {
         fetch("/api/rooms/leave", {
           method: "POST",
@@ -265,7 +410,10 @@ export default function InterviewRoom() {
           body: JSON.stringify({ name: roomName, peerId: peerIdRef.current }),
         }).catch(() => {});
       }
+      if (levelTimerRef.current) cancelAnimationFrame(levelTimerRef.current);
+      audioCtxRef.current?.close().catch(() => {});
       hangUp();
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -345,9 +493,9 @@ export default function InterviewRoom() {
 
   return (
     <div className="mx-auto max-w-6xl p-4 sm:p-6">
-      <div className="mb-6 flex items-center justify-between gap-4">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-tight">Interview Room{roomName ? `: ${roomName}` : ""}</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {!connected ? (
             <Button onClick={startCall} aria-label="Start call">
               <RefreshCcw className="mr-2 h-4 w-4" /> Start call
@@ -356,6 +504,20 @@ export default function InterviewRoom() {
             <Button variant="destructive" onClick={hangUp} aria-label="End call">
               <PhoneOff className="mr-2 h-4 w-4" /> End
             </Button>
+          )}
+          {!isRecording ? (
+            <Button variant="outline" onClick={startRecording} aria-label="Start recording">
+              <Play className="mr-2 h-4 w-4" /> Record
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => stopRecording()} aria-label="Stop recording">
+              <StopCircle className="mr-2 h-4 w-4" /> Stop
+            </Button>
+          )}
+          {downloadUrl && (
+            <a href={downloadUrl} download={`aurasign-${roomName}.webm`} className="inline-flex items-center rounded-md border px-3 py-2 text-sm">
+              <Download className="mr-2 h-4 w-4" /> Download
+            </a>
           )}
         </div>
       </div>
@@ -394,6 +556,10 @@ export default function InterviewRoom() {
               <Button variant={cameraOff ? "secondary" : "default"} onClick={toggleCamera} aria-pressed={cameraOff} aria-label={cameraOff ? "Turn camera on" : "Turn camera off"}>
                 {cameraOff ? <VideoOff className="mr-2 h-4 w-4" /> : <Video className="mr-2 h-4 w-4" />} {cameraOff ? "Camera On" : "Camera Off"}
               </Button>
+              <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                <Activity className={`h-4 w-4 ${micActive ? "text-green-600" : "text-muted-foreground"}`} />
+                Mic {micActive ? "active" : "idle"}
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -401,23 +567,58 @@ export default function InterviewRoom() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Live Captions (AI)</CardTitle>
+              <CardTitle className="text-base">Live Captions (Speech → Text)</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="h-28 overflow-auto rounded-md border p-3 text-sm text-muted-foreground">
-                Placeholder for real-time AI captions...
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={toggleSpeechRecognition} disabled={!speechSupported}>
+                  {recognizing ? <StopCircle className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
+                  {recognizing ? "Stop" : "Check mic & Start"}
+                </Button>
+                {!speechSupported && <span className="text-xs text-muted-foreground">Speech recognition not supported in this browser</span>}
+              </div>
+              <div className="mt-3 h-28 overflow-auto rounded-md border p-3 text-sm">
+                {transcript || "Your live transcript will appear here..."}
               </div>
             </CardContent>
           </Card>
+
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Sign Language Translation (AI)</CardTitle>
+              <CardTitle className="text-base">Speech → Hand Sign (Demo)</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid gap-3 text-sm text-muted-foreground">
-                <div className="aspect-video w-full overflow-hidden rounded-md border bg-muted" aria-label="AI sign output placeholder" />
-                <p>Realtime avatar/overlay will appear here.</p>
+              <p className="mb-2 text-xs text-muted-foreground">We render an A–Z fingerspelling demo from the transcript.</p>
+              <div className="grid grid-cols-12 gap-1 rounded-md border p-2 text-center text-sm">
+                {(transcript || "").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 60).split("").map((ch, i) => (
+                  <div key={i} className="rounded bg-secondary py-1 font-mono">{ch}</div>
+                ))}
+                {!transcript && <div className="col-span-12 text-xs text-muted-foreground">Speak to see letters appear here</div>}
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Hand Sign → Speech (Demo)</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const form = e.currentTarget as HTMLFormElement;
+                  const fd = new FormData(form);
+                  const text = String(fd.get("signText") || "").trim();
+                  speak(text);
+                }}
+              >
+                <Input name="signText" placeholder="Type sign gloss to speak (e.g., HELLO)" />
+                <Button type="submit" size="sm">
+                  <Play className="mr-2 h-4 w-4" /> Speak
+                </Button>
+              </form>
+              <p className="mt-2 text-xs text-muted-foreground">This demo uses the browser speech synthesizer.</p>
             </CardContent>
           </Card>
         </div>
