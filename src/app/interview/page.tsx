@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Mic, MicOff, Video, VideoOff, PhoneOff, RefreshCcw, Download, Activity, Play, StopCircle, Volume2 } from "lucide-react";
+import HandGestureRecognizer from "@/components/sign/hand-gesture";
 
 export default function InterviewRoom() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -536,7 +537,7 @@ export default function InterviewRoom() {
           <CardContent>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="relative aspect-video overflow-hidden rounded-lg bg-muted">
-                <video ref={localVideoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
+                <video ref={localVideoRef} id="localVideoEl" autoPlay muted playsInline className="h-full w-full object-cover" />
                 {!connected && (
                   <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">Local preview</div>
                 )}
@@ -598,29 +599,7 @@ export default function InterviewRoom() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Hand Sign → Speech (Demo)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form
-                className="flex items-center gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const form = e.currentTarget as HTMLFormElement;
-                  const fd = new FormData(form);
-                  const text = String(fd.get("signText") || "").trim();
-                  speak(text);
-                }}
-              >
-                <Input name="signText" placeholder="Type sign gloss to speak (e.g., HELLO)" />
-                <Button type="submit" size="sm">
-                  <Play className="mr-2 h-4 w-4" /> Speak
-                </Button>
-              </form>
-              <p className="mt-2 text-xs text-muted-foreground">This demo uses the browser speech synthesizer.</p>
-            </CardContent>
-          </Card>
+          <HandGestureRecognizer />
         </div>
       </div>
     </div>
