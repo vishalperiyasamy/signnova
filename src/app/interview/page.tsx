@@ -49,6 +49,11 @@ export default function InterviewRoom() {
   const [micActive, setMicActive] = useState(false);
   const levelTimerRef = useRef<number | null>(null);
 
+  // Meet-style UI state
+  const [role, setRole] = useState<"interviewer" | "candidate">("candidate");
+  const [enableSpeechToSign, setEnableSpeechToSign] = useState(true);
+  const [enableSignToSpeech, setEnableSignToSpeech] = useState(true);
+
   async function ensureLocalMedia() {
     if (streamRef.current) return streamRef.current;
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -493,115 +498,111 @@ export default function InterviewRoom() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl p-4 sm:p-6">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Interview Room{roomName ? `: ${roomName}` : ""}</h1>
-        <div className="flex flex-wrap items-center gap-2">
+    <div className="p-0">
+      <div className="relative h-[calc(100vh-1rem)] w-full overflow-hidden rounded-lg bg-black">
+        {/* Remote fills screen */}
+        <video ref={remoteVideoRef} autoPlay playsInline className="absolute inset-0 h-full w-full object-cover" />
+        {!connected && (
+          <div className="absolute inset-0 grid place-items-center text-sm text-white/70">Remote participant</div>
+        )}
+
+        {/* Local PiP */}
+        <div className="pointer-events-auto absolute bottom-4 right-4 w-40 sm:w-56">
+          <div className="relative aspect-video overflow-hidden rounded-md border bg-black/70 shadow-lg">
+            <video ref={localVideoRef} id="localVideoEl" autoPlay muted playsInline className="h-full w-full object-cover" />
+            {!connected && (
+              <div className="absolute inset-0 grid place-items-center text-[10px] text-white/70">Local preview</div>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom center call controls */}
+        <div className="pointer-events-auto absolute inset-x-0 bottom-4 flex items-center justify-center gap-2 px-4">
           {!connected ? (
-            <Button onClick={startCall} aria-label="Start call">
-              <RefreshCcw className="mr-2 h-4 w-4" /> Start call
+            <Button onClick={startCall} aria-label="Start call" className="bg-white/10 text-white hover:bg-white/20">
+              <RefreshCcw className="mr-2 h-4 w-4" /> Start
             </Button>
           ) : (
             <Button variant="destructive" onClick={hangUp} aria-label="End call">
               <PhoneOff className="mr-2 h-4 w-4" /> End
             </Button>
           )}
+          <Button variant={muted ? "secondary" : "default"} onClick={toggleMute} aria-pressed={muted} aria-label={muted ? "Unmute" : "Mute"} className="bg-white/10 text-white hover:bg-white/20">
+            {muted ? <MicOff className="mr-2 h-4 w-4" /> : <Mic className="mr-2 h-4 w-4" />} {muted ? "Unmute" : "Mute"}
+          </Button>
+          <Button variant={cameraOff ? "secondary" : "default"} onClick={toggleCamera} aria-pressed={cameraOff} aria-label={cameraOff ? "Turn camera on" : "Turn camera off"} className="bg-white/10 text-white hover:bg-white/20">
+            {cameraOff ? <VideoOff className="mr-2 h-4 w-4" /> : <Video className="mr-2 h-4 w-4" />} {cameraOff ? "Cam On" : "Cam Off"}
+          </Button>
           {!isRecording ? (
-            <Button variant="outline" onClick={startRecording} aria-label="Start recording">
+            <Button variant="outline" onClick={startRecording} aria-label="Start recording" className="bg-white/10 text-white hover:bg-white/20">
               <Play className="mr-2 h-4 w-4" /> Record
             </Button>
           ) : (
-            <Button variant="outline" onClick={() => stopRecording()} aria-label="Stop recording">
+            <Button variant="outline" onClick={() => stopRecording()} aria-label="Stop recording" className="bg-white/10 text-white hover:bg-white/20">
               <StopCircle className="mr-2 h-4 w-4" /> Stop
             </Button>
           )}
           {downloadUrl && (
-            <a href={downloadUrl} download={`aurasign-${roomName}.webm`} className="inline-flex items-center rounded-md border px-3 py-2 text-sm">
+            <a href={downloadUrl} download={`aurasign-${roomName}.webm`} className="inline-flex items-center rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20">
               <Download className="mr-2 h-4 w-4" /> Download
             </a>
           )}
+          <div className="ml-2 hidden items-center gap-2 text-xs text-white/80 sm:flex">
+            <Activity className={`h-4 w-4 ${micActive ? "text-green-400" : "text-white/60"}`} />
+            Mic {micActive ? "active" : "idle"}
+          </div>
         </div>
+
+        {/* Floating role selector (top-left) */}
+        <div className="pointer-events-auto absolute left-4 top-4 flex items-center gap-2 rounded-full border border-white/20 bg-black/40 p-1 backdrop-blur">
+          <Button size="sm" variant={role === "interviewer" ? "default" : "outline"} onClick={() => setRole("interviewer")} className={`${role === "interviewer" ? "bg-white text-black hover:bg-white/90" : "bg-transparent text-white hover:bg-white/10"}`}>
+            Interviewer
+          </Button>
+          <Button size="sm" variant={role === "candidate" ? "default" : "outline"} onClick={() => setRole("candidate")} className={`${role === "candidate" ? "bg-white text-black hover:bg-white/90" : "bg-transparent text-white hover:bg-white/10"}`}>
+            Candidate
+          </Button>
+        </div>
+
+        {/* Floating feature toggles (right-center) */}
+        <div className="pointer-events-auto absolute right-4 top-1/2 -translate-y-1/2 space-y-2">
+          <Button size="sm" onClick={() => setEnableSpeechToSign((v) => !v)} className={`${enableSpeechToSign ? "bg-white text-black" : "bg-white/10 text-white"} hover:bg-white/20`}>
+            Speech → Sign
+          </Button>
+          <Button size="sm" onClick={() => setEnableSignToSpeech((v) => !v)} className={`${enableSignToSpeech ? "bg-white text-black" : "bg-white/10 text-white"} hover:bg-white/20`}>
+            Sign → Speech
+          </Button>
+        </div>
+
+        {/* Captions panel (bottom-left) */}
+        {enableSpeechToSign && (
+          <div className="pointer-events-auto absolute bottom-4 left-4 w-[min(480px,calc(100vw-5rem))] rounded-md border border-white/20 bg-black/50 p-3 text-sm text-white backdrop-blur">
+            <div className="mb-2 flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={toggleSpeechRecognition} disabled={!speechSupported} className="border-white/30 bg-white/10 text-white hover:bg-white/20">
+                {recognizing ? <StopCircle className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
+                {recognizing ? "Stop" : "Start captions"}
+              </Button>
+              {!speechSupported && <span className="text-xs text-white/70">Speech recognition not supported</span>}
+            </div>
+            <div className="max-h-40 overflow-auto whitespace-pre-wrap text-white/90">
+              {transcript || "Your live transcript will appear here..."}
+            </div>
+          </div>
+        )}
+
+        {/* Hand Gesture Recognizer panel (top-left) */}
+        {enableSignToSpeech && (
+          <div className="pointer-events-auto absolute left-4 top-24 max-w-[520px]">
+            <HandGestureRecognizer />
+          </div>
+        )}
       </div>
 
+      {/* Error notice outside the video canvas */}
       {error && (
-        <div role="alert" className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
+        <div role="alert" className="mx-4 mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
           {error}
         </div>
       )}
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base">Video</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="relative aspect-video overflow-hidden rounded-lg bg-muted">
-                <video ref={localVideoRef} id="localVideoEl" autoPlay muted playsInline className="h-full w-full object-cover" />
-                {!connected && (
-                  <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">Local preview</div>
-                )}
-              </div>
-              <div className="relative aspect-video overflow-hidden rounded-lg bg-muted">
-                <video ref={remoteVideoRef} autoPlay playsInline className="h-full w-full object-cover" />
-                {!connected && (
-                  <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">Remote participant</div>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <Button variant={muted ? "secondary" : "default"} onClick={toggleMute} aria-pressed={muted} aria-label={muted ? "Unmute" : "Mute"}>
-                {muted ? <MicOff className="mr-2 h-4 w-4" /> : <Mic className="mr-2 h-4 w-4" />} {muted ? "Unmute" : "Mute"}
-              </Button>
-              <Button variant={cameraOff ? "secondary" : "default"} onClick={toggleCamera} aria-pressed={cameraOff} aria-label={cameraOff ? "Turn camera on" : "Turn camera off"}>
-                {cameraOff ? <VideoOff className="mr-2 h-4 w-4" /> : <Video className="mr-2 h-4 w-4" />} {cameraOff ? "Camera On" : "Camera Off"}
-              </Button>
-              <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                <Activity className={`h-4 w-4 ${micActive ? "text-green-600" : "text-muted-foreground"}`} />
-                Mic {micActive ? "active" : "idle"}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Live Captions (Speech → Text)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={toggleSpeechRecognition} disabled={!speechSupported}>
-                  {recognizing ? <StopCircle className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
-                  {recognizing ? "Stop" : "Check mic & Start"}
-                </Button>
-                {!speechSupported && <span className="text-xs text-muted-foreground">Speech recognition not supported in this browser</span>}
-              </div>
-              <div className="mt-3 h-28 overflow-auto rounded-md border p-3 text-sm">
-                {transcript || "Your live transcript will appear here..."}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Speech → Hand Sign (Demo)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="mb-2 text-xs text-muted-foreground">We render an A–Z fingerspelling demo from the transcript.</p>
-              <div className="grid grid-cols-12 gap-1 rounded-md border p-2 text-center text-sm">
-                {(transcript || "").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 60).split("").map((ch, i) => (
-                  <div key={i} className="rounded bg-secondary py-1 font-mono">{ch}</div>
-                ))}
-                {!transcript && <div className="col-span-12 text-xs text-muted-foreground">Speak to see letters appear here</div>}
-              </div>
-            </CardContent>
-          </Card>
-
-          <HandGestureRecognizer />
-        </div>
-      </div>
     </div>
   );
 }
