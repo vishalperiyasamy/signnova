@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Mic, MicOff, Video, VideoOff, PhoneOff, RefreshCcw, Download, Activity, Play, StopCircle, Volume2, Settings } from "lucide-react";
+import { Mic, MicOff, Video, VideoOff, PhoneOff, RefreshCcw, Download, Activity, Play, StopCircle, Volume2, Settings, Info as InfoIcon } from "lucide-react";
 import HandGestureRecognizer from "@/components/sign/hand-gesture";
+import SPOTERRecognition from "@/components/sign/spoter-recognition";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -116,6 +117,34 @@ export default function InterviewRoom() {
   const [showAvatar, setShowAvatar] = useState(true);
   const [showTranscript, setShowTranscript] = useState(true);
   const [sendSignAsSpeech, setSendSignAsSpeech] = useState(true);
+  
+  // Subtitle display state
+  interface Subtitle {
+    id: string;
+    speaker: string;
+    text: string;
+    timestamp: number;
+  }
+  const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
+  
+  // Function to add a new subtitle entry
+  const addSubtitle = (speaker: string, text: string) => {
+    const newSubtitle: Subtitle = {
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      speaker,
+      text,
+      timestamp: Date.now()
+    };
+    
+    setSubtitles(prev => {
+      // Keep only the last 50 subtitles to prevent memory issues
+      const updated = [...prev, newSubtitle];
+      if (updated.length > 50) {
+        return updated.slice(-50);
+      }
+      return updated;
+    });
+  };
 
   // Draggable PiP state
   const pipRef = useRef<HTMLDivElement | null>(null);
@@ -214,7 +243,8 @@ export default function InterviewRoom() {
   function setupDataChannel(dc: RTCDataChannel) {
     dataChannelRef.current = dc;
     dc.onopen = () => {
-      // Channel ready
+      // Channel ready - send current settings to sync
+      sendSettingsSync();
     };
     dc.onclose = () => {
       if (dataChannelRef.current === dc) dataChannelRef.current = null;
@@ -226,6 +256,17 @@ export default function InterviewRoom() {
         if (msg?.type === "tts" && typeof msg.text === "string" && msg.text) {
           const u = new SpeechSynthesisUtterance(msg.text);
           window.speechSynthesis.speak(u);
+          
+          // Add to subtitles with speaker info
+          const speakerType = "Remote";
+          addSubtitle(speakerType, msg.text);
+        } else if (msg?.type === "settings" && typeof msg.settings === "object") {
+          // Apply remote settings changes
+          applyRemoteSettings(msg.settings);
+        } else if (msg?.type === "transcript" && typeof msg.text === "string" && msg.text) {
+          // Add remote transcript to subtitles
+          const speakerType = "Remote";
+          addSubtitle(speakerType, msg.text);
         }
       } catch {
         // ignore non-JSON
@@ -238,7 +279,48 @@ export default function InterviewRoom() {
     if (!text || !dc || dc.readyState !== "open") return;
     try {
       dc.send(JSON.stringify({ type: "tts", text }));
+      
+      // Add to local subtitles with speaker info
+      const speakerType = "You";
+      addSubtitle(speakerType, text);
     } catch {}
+  }
+  
+  function sendTranscript(text: string) {
+    const dc = dataChannelRef.current;
+    if (!text || !dc || dc.readyState !== "open") return;
+    try {
+      dc.send(JSON.stringify({ type: "transcript", text }));
+      
+      // Add to local subtitles with speaker info
+      const speakerType = "You";
+      addSubtitle(speakerType, text);
+    } catch {}
+  }
+  
+  function sendSettingsSync() {
+    const dc = dataChannelRef.current;
+    if (!dc || dc.readyState !== "open") return;
+    try {
+      // Send current settings to remote peer
+      dc.send(JSON.stringify({
+        type: "settings",
+        settings: {
+          sendSignAsSpeech,
+          showTranscript,
+          showAvatar,
+          receiveAs
+        }
+      }));
+    } catch {}
+  }
+  
+  function applyRemoteSettings(settings: any) {
+    // Apply received settings from remote peer
+    if (typeof settings.sendSignAsSpeech === 'boolean') setSendSignAsSpeech(settings.sendSignAsSpeech);
+    if (typeof settings.showTranscript === 'boolean') setShowTranscript(settings.showTranscript);
+    if (typeof settings.showAvatar === 'boolean') setShowAvatar(settings.showAvatar);
+    if (settings.receiveAs) setReceiveAs(settings.receiveAs);
   }
 
   async function makeOffer() {
@@ -543,6 +625,11 @@ export default function InterviewRoom() {
         interimText = (event.results[lastIdx][0]?.transcript || "").trim();
       }
       setInterim(interimText);
+      
+      // Send final transcripts to remote peer
+      if (newChunks && newChunks.length) {
+        sendTranscript(newChunks.join(" "));
+      }
     };
     rec.onerror = (e: any) => {
       const code = e?.error;
@@ -779,8 +866,24 @@ export default function InterviewRoom() {
             </div>
           </div>
 
+          {/* Subtitles Display (overlaid on video) */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-16 max-h-[40%] overflow-y-auto px-4 py-2">
+            <div className="flex flex-col gap-2">
+              {subtitles.slice(-8).map((subtitle) => (
+                <div key={subtitle.id} className="rounded-md bg-black/70 p-2 backdrop-blur-sm">
+                  <div className="flex items-start gap-2">
+                    <span className="font-medium text-white">{subtitle.speaker}:</span>
+                    <span className="text-white">{subtitle.text}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          
           {/* Bottom Control Bar (overlaid, non-obstructive) */}
-          <div className="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-center gap-2 border-t border-white/10 bg-black/40 px-4 py-3 backdrop-blur">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center gap-2 border-t border-white/10 bg-black/40 px-4 py-3 backdrop-blur">
+            {/* Wrap buttons in pointer-events-auto to make only them clickable */}
+            <div className="pointer-events-auto flex items-center justify-center gap-2">
             {!connected ? (
               <Button onClick={startCall} aria-label="Start call" className="bg-white/10 text-white hover:bg-white/20">
                 <RefreshCcw className="mr-2 h-4 w-4" /> Start
@@ -818,6 +921,7 @@ export default function InterviewRoom() {
               <Settings className="h-4 w-4" />
               <span className="text-xs">Devices</span>
             </div>
+            </div>
           </div>
         </div>
 
@@ -834,16 +938,50 @@ export default function InterviewRoom() {
                 <Label htmlFor="toggle-send-remote" className="text-sm">Handsign → Speech</Label>
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-muted-foreground">Send to opponent</span>
-                  <Switch id="toggle-send-remote" checked={sendSignAsSpeech} onCheckedChange={setSendSignAsSpeech} />
+                  <Switch 
+                    id="toggle-send-remote" 
+                    checked={sendSignAsSpeech} 
+                    onCheckedChange={(checked) => {
+                      setSendSignAsSpeech(checked);
+                      // Sync setting with remote peer
+                      sendSettingsSync();
+                    }} 
+                  />
                 </div>
               </div>
-              <HandGestureRecognizer
-                onPhrase={(text) => {
-                  if (sendSignAsSpeech) {
-                    sendRemoteTTS(text);
-                  }
-                }}
-              />
+              <div className="text-xs text-blue-400 mb-2">
+                <InfoIcon className="inline h-3 w-3 mr-1" /> Settings are shared with all participants
+              </div>
+              <div className="mb-2">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">SPOTER Sign Recognition</span>
+                  <span className="inline-flex h-5 items-center rounded-full bg-green-500/10 px-2 text-xs font-medium text-green-500">Active</span>
+                </div>
+                <SPOTERRecognition 
+                  onPhrase={(text) => {
+                    if (sendSignAsSpeech) {
+                      sendRemoteTTS(text);
+                      // Add to transcript for local display
+                      setTranscript(prev => prev ? `${prev}\n[Sign] ${text}` : `[Sign] ${text}`);
+                    }
+                  }}
+                />
+              </div>
+              <div className="mb-2">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">MediaPipe Gesture Recognition</span>
+                  <span className="inline-flex h-5 items-center rounded-full bg-blue-500/10 px-2 text-xs font-medium text-blue-500">Active</span>
+                </div>
+                <HandGestureRecognizer
+                  onPhrase={(text) => {
+                    if (sendSignAsSpeech) {
+                      sendRemoteTTS(text);
+                      // Add to transcript for local display
+                      setTranscript(prev => prev ? `${prev}\n[Gesture] ${text}` : `[Gesture] ${text}`);
+                    }
+                  }}
+                />
+              </div>
             </div>
 
             {/* Divider */}
@@ -857,6 +995,9 @@ export default function InterviewRoom() {
                   {recognizing ? <StopCircle className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
                   {recognizing ? "Stop" : "Start"}
                 </Button>
+              </div>
+              <div className="text-xs text-blue-400 mb-2">
+                <InfoIcon className="inline h-3 w-3 mr-1" /> Transcripts are shared with all participants
               </div>
               <div className="min-h-0 flex-1 overflow-auto rounded-md border p-3 text-sm">
                 {speechSupported ? (

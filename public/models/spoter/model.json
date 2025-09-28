@@ -1,0 +1,160 @@
+{
+  "format": "layers-model",
+  "generatedBy": "TensorFlow.js v3.18.0",
+  "convertedBy": "TensorFlow.js Converter v3.18.0",
+  "modelTopology": {
+    "keras_version": "2.9.0",
+    "backend": "tensorflow",
+    "model_config": {
+      "class_name": "Model",
+      "config": {
+        "name": "spoter_interview_model",
+        "layers": [
+          {
+            "class_name": "InputLayer",
+            "config": {
+              "batch_input_shape": [null, 30, 137, 2],
+              "dtype": "float32",
+              "sparse": false,
+              "ragged": false,
+              "name": "input_1"
+            },
+            "name": "input_1",
+            "inbound_nodes": []
+          },
+          {
+            "class_name": "Reshape",
+            "config": {
+              "name": "reshape",
+              "trainable": true,
+              "dtype": "float32",
+              "target_shape": [30, 274]
+            },
+            "name": "reshape",
+            "inbound_nodes": [["input_1", 0, 0, {}]]
+          },
+          {
+            "class_name": "LSTM",
+            "config": {
+              "name": "lstm",
+              "trainable": true,
+              "dtype": "float32",
+              "return_sequences": false,
+              "return_state": false,
+              "go_backwards": false,
+              "stateful": false,
+              "unroll": false,
+              "time_major": false,
+              "units": 128,
+              "activation": "tanh",
+              "recurrent_activation": "sigmoid",
+              "use_bias": true,
+              "kernel_initializer": {
+                "class_name": "GlorotUniform",
+                "config": {"seed": null}
+              },
+              "recurrent_initializer": {
+                "class_name": "Orthogonal",
+                "config": {"gain": 1.0, "seed": null}
+              },
+              "bias_initializer": {"class_name": "Zeros", "config": {}},
+              "unit_forget_bias": true,
+              "kernel_regularizer": null,
+              "recurrent_regularizer": null,
+              "bias_regularizer": null,
+              "activity_regularizer": null,
+              "kernel_constraint": null,
+              "recurrent_constraint": null,
+              "bias_constraint": null,
+              "dropout": 0.2,
+              "recurrent_dropout": 0.0,
+              "implementation": 2
+            },
+            "name": "lstm",
+            "inbound_nodes": [["reshape", 0, 0, {}]]
+          },
+          {
+            "class_name": "Dense",
+            "config": {
+              "name": "dense_1",
+              "trainable": true,
+              "dtype": "float32",
+              "units": 64,
+              "activation": "relu",
+              "use_bias": true,
+              "kernel_initializer": {
+                "class_name": "GlorotUniform",
+                "config": {"seed": null}
+              },
+              "bias_initializer": {"class_name": "Zeros", "config": {}},
+              "kernel_regularizer": null,
+              "bias_regularizer": null,
+              "activity_regularizer": null,
+              "kernel_constraint": null,
+              "bias_constraint": null
+            },
+            "name": "dense_1",
+            "inbound_nodes": [["lstm", 0, 0, {}]]
+          },
+          {
+            "class_name": "Dense",
+            "config": {
+              "name": "dense_output",
+              "trainable": true,
+              "dtype": "float32",
+              "units": 10,
+              "activation": "softmax",
+              "use_bias": true,
+              "kernel_initializer": {
+                "class_name": "GlorotUniform",
+                "config": {"seed": null}
+              },
+              "bias_initializer": {"class_name": "Zeros", "config": {}},
+              "kernel_regularizer": null,
+              "bias_regularizer": null,
+              "activity_regularizer": null,
+              "kernel_constraint": null,
+              "bias_constraint": null
+            },
+            "name": "dense_output",
+            "inbound_nodes": [["dense_1", 0, 0, {}]]
+          }
+        ],
+        "input_layers": [["input_1", 0, 0]],
+        "output_layers": [["dense_output", 0, 0]]
+      }
+    },
+    "training_config": {
+      "loss": "categorical_crossentropy",
+      "metrics": [["accuracy"]],
+      "weighted_metrics": null,
+      "loss_weights": null,
+      "optimizer_config": {
+        "class_name": "Adam",
+        "config": {
+          "name": "Adam",
+          "learning_rate": 0.001,
+          "decay": 0.0,
+          "beta_1": 0.9,
+          "beta_2": 0.999,
+          "epsilon": 1e-07,
+          "amsgrad": false
+        }
+      }
+    }
+  },
+  "weightsManifest": [
+    {
+      "paths": ["weights.bin"],
+      "weights": [
+        {"name": "lstm/kernel", "shape": [274, 512], "dtype": "float32"},
+        {"name": "lstm/recurrent_kernel", "shape": [128, 512], "dtype": "float32"},
+        {"name": "lstm/bias", "shape": [512], "dtype": "float32"},
+        {"name": "dense_1/kernel", "shape": [128, 64], "dtype": "float32"},
+        {"name": "dense_1/bias", "shape": [64], "dtype": "float32"},
+        {"name": "dense_output/kernel", "shape": [64, 10], "dtype": "float32"},
+        {"name": "dense_output/bias", "shape": [10], "dtype": "float32"}
+      ]
+    }
+  ]
+}

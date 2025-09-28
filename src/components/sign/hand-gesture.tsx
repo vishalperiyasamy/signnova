@@ -120,6 +120,19 @@ export const HandGestureRecognizer = () => {
 
     const res: GestureRecognizerResult | undefined = r.recognizeForVideo(video, now);
 
+    // Dispatch event with landmarks for SPOTER to use
+    if (res && res.landmarks) {
+      const event = new CustomEvent("hands:gesture", {
+        detail: {
+          landmarks: res.landmarks,
+          handednesses: res.handednesses,
+          worldLandmarks: res.worldLandmarks || null,
+          poseLandmarks: null // MediaPipe Gesture doesn't include pose
+        }
+      });
+      window.dispatchEvent(event);
+    }
+
     if (res && res.gestures && res.gestures[0] && res.gestures[0][0]) {
       const top = res.gestures[0][0];
       const name = top.categoryName;
